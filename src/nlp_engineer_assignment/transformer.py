@@ -44,3 +44,17 @@ class CausalSelfAttention(nn.Module):
         output = torch.einsum('bij,bjh->bih',scores,v)
 
         return output
+
+
+if __name__ == "__main__":
+    # Simple tests.
+    # Unit test for MLP
+    mlp = MLP(input_dim = 1, ff_dim = 3, dropout= 0.0)
+    out = mlp(torch.zeros(10, 1))
+    assert out.shape == (10, 1), f"Failed!{out.shape}"
+
+    # Unit test for Self Attention
+    s = CausalSelfAttention(seq_len = 32, hidden_dim = 16, num_heads = 1)
+    inp = torch.zeros(10, 32, 16)
+    out = s(inp)
+    assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
