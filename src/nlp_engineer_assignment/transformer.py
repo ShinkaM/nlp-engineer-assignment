@@ -45,6 +45,23 @@ class CausalSelfAttention(nn.Module):
 
         return output
 
+class PositionalEncoding(torch.nn.Module):
+    def __init__(self, hidden_dim:int, seq_len:int):
+        super().__init__()
+        pe = torch.zeros(seq_len, hidden_dim)
+        position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, hidden_dim, 2).float() * (-math.log(10000.0) / hidden_dim)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer("pe", pe, persistent=False)
+
+    def forward(self, x):
+        # import IPython; IPython.embed()
+        x = x + self.pe[:, : x.size(1)]
+        return x
 
 if __name__ == "__main__":
     # Simple tests.
@@ -58,3 +75,7 @@ if __name__ == "__main__":
     inp = torch.zeros(10, 32, 16)
     out = s(inp)
     assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
+    pe = PositionalEncoding(hidden_dim=16, seq_len = 32)
+    inp = torch.zeros(10, 32, 16)
+    out = pe(inp)
+    assert out.shape == inp.shape, f"Failed!{out.shape, inp.shape}"
