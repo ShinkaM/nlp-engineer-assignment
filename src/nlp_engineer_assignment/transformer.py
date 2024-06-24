@@ -158,8 +158,25 @@ class Transformer(nn.Module):
                     param, mean=0.0, std=0.02 / math.sqrt(2 * num_layers)
                 )
 
+    def forward(self, idx:torch.Tensor):
+        B,S = idx.shape
+        position_embed = self.position_embed(torch.arrange(S, device = idx.device).unsqueeze(0))
+        token_embed = self.token_embed(idx)
 
+        embed = self.dropout(token_embed + position_embed)
+
+        for block in self.layers:
+            embed = block(embed)
+        embed = self.layer_norm(embed)
+        logits = self.decode_to_vocab(embed)
+        return logits   
     
+    def step(self, idx:torch.Tensor, labels: torch.Tensor = None):
+        logits = self(idx)
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(logits.reshape(-1, self.output_vocab_size), labels.flatten())
+        return logits, loss
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
