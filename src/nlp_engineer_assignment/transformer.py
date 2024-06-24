@@ -5,6 +5,10 @@ from typing import Optional
 from torch.nn import functional as F
 from dataclasses import dataclass
 import numpy as np
+from .dataset import CharTokenizedDataset
+from .utils import count_letters, read_inputs, score
+from tqdm import tqdm
+
 """
 MLP to be used in block
 """
@@ -193,8 +197,66 @@ class Transformer(nn.Module):
         idxs = logits.argmax(-1)
         return logits, idxs 
     
-    
+    def train_classifier(
+            vocabs,
+            train_inputs,
+            batch_size: int = 10, 
+            num_workers: int = 1,
+            n_epochs: int = 10,
+            device: str = "cpu",
+            eval_every_n_epochs: int = 1
+    ):
+        output_size = 3 #0, 1, or 2
+        model = Transformer(
+            ff_dim=64,
+            num_layers= = 5,
+            num_heads=4, 
+            embed_dim=512,
+            vocab_size=len(vocabs),
+            output_vocab_size=output_vocab_size,
+            dropout=0.01
+        )
+        optimizer = model.configure_optimizers(lr = 3e-4, weight_decay = 0.02)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1)
 
+        train_dataset = CharTokenizedDataset(sentences=train_inputs, vocab=vocabs)
+        train_loader = train_dataset.get_dataloader(
+            batch_size=batch_size,
+            num_workers=num_workers,
+            pin_memory=num_workers > 0,
+        )
+        
+        for epoch in range(n_epochs):
+            model.train()
+            batch_iter = tqdm(train_loader, desc = f"Epoch {epoch}, Loss: NaN")
+            for i, batch in enumerate(batch_iter):
+                idxs, counts = batch
+                idxs = idxs.to(device)
+                counts = counts.to(device)
+                _, loss = model.step(idx = idxs, labels=counts)
+                model.zero_grad(set_to_none=True)
+                loss.backward()
+                optimizer.step()
+                batch_iter.set_description(
+                    "Epoch {epoch}, Loss: {loss:.4f}".format(
+                    epoch=epoch,
+                    loss=loss.item(),
+                    )
+                )
+                scheduler.step()
+
+                if epoch % eval_every_n_epochs == 0:
+                    model.eval()
+                    sample_sentence = train_inputs[0]
+                    sample_input, sample_count = train_dataset[0]
+                    pred_logits, generated_count = model.generate(sample_input)
+                    for i, c in enumerate(sample_sentence):
+                        print(
+                            "{i:>2}, {c}, {count:>3}, {pred_count:>3}".format(
+                                i=i, c=c, count=sample_count[i], pred_count=generated_count[i]
+                            )
+                        )
+            return model
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
