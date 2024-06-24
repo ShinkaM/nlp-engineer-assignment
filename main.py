@@ -2,8 +2,19 @@ import numpy as np
 import os
 import uvicorn
 
-from nlp_engineer_assignment import count_letters, print_line, read_inputs, \
-    score, train_classifier
+import sys
+
+sys.path.insert(0, "./lib")
+
+from src.nlp_engineer_assignment import (
+    count_letters,
+    print_line,
+    read_inputs,
+    score,
+    train_classifier,
+)
+
+from src.nlp_engineer_assignment.dataset import CharTokenizedDataset
 
 
 def train_model():
@@ -14,38 +25,43 @@ def train_model():
     ###
 
     # Constructs the vocabulary as described in the assignment
-    vocabs = [chr(ord('a') + i) for i in range(0, 26)] + [' ']
+    vocabs = [chr(ord("a") + i) for i in range(0, 26)] + [" "]
 
     ###
     # Train
     ###
 
-    train_inputs = read_inputs(
-        os.path.join(cur_dir, "data", "train.txt")
-    )
+    train_inputs = read_inputs(os.path.join(cur_dir, "data", "train.txt"))
 
-    model = train_classifier(train_inputs)
+    model = train_classifier(
+        vocabs=vocabs, train_inputs=train_inputs, num_workers=0, n_epochs=5
+    )
+    model.save_checkpoint("data/trained_model.ckpt")
+    print("Saved Model!")
+
 
     ###
     # Test
     ###
 
-    test_inputs = read_inputs(
-        os.path.join(cur_dir, "data", "test.txt")
-    )
+    test_inputs = read_inputs(os.path.join(cur_dir, "data", "test.txt"))
+    test_dataset = CharTokenizedDataset(sentences=test_inputs, vocab=vocabs)
+    model.eval()
 
-    # TODO: Extract predictions from the model and save it to a
-    # variable called `predictions`. Observe the shape of the
-    # example random predictions.
-    golds = np.stack([count_letters(text) for text in test_inputs])
-    predictions = np.random.randint(0, 3, size=golds.shape)
+    golds = []
+    predictions = []
+    for encoded_text, gold in test_dataset:
+        logits, prediction = model.generate(encoded_text)
+        predictions.append(prediction.numpy())
+        golds.append(gold.numpy())
+
+    golds = np.stack(golds)
+    predictions = np.stack(predictions)
 
     # Print the first five inputs, golds, and predictions for analysis
     for i in range(5):
         print(f"Input {i+1}: {test_inputs[i]}")
-        print(
-            f"Gold {i+1}: {count_letters(test_inputs[i]).tolist()}"
-        )
+        print(f"Gold {i+1}: {count_letters(test_inputs[i]).tolist()}")
         print(f"Pred {i+1}: {predictions[i].tolist()}")
         print_line()
 
@@ -60,5 +76,5 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_level="info",
-        workers=1
+        workers=1,
     )
