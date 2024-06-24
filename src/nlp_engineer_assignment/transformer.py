@@ -93,6 +93,73 @@ class Block(nn.Module):
         x = self.norm2(x)
         return x
     
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        num_heads: int,
+        embed_dim: int,
+        vocab_size: int,
+        ff_dim: int,
+        output_vocab_size: int,
+        seq_len: int = 512,
+        dropout: float = 0.0,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.output_vocab_size = output_vocab_size
+        self.hyperparameters = dict(
+            num_layers=num_layers,
+            num_heads=num_heads,
+            embed_dim=embed_dim,
+            vocab_size=vocab_size,
+            ff_dim=ff_dim,
+            seq_len=seq_len,
+            dropout=dropout,
+            output_vocab_size=output_vocab_size,
+        )
+        self.token_embed = nn.Embedding(vocab_size, embed_dim)
+        self.position_embed = PositionalEncoding(embed_dim, seq_len)
+
+        self.decode_to_vocab = nn.Linear(embed_dim, output_vocab_size)
+        self.dropout = nn.Dropout(p=dropout)
+
+        self.layers = nn.ModuleList(
+            [
+                Block(
+                    seq_len=seq_len,
+                    hidden_dim=embed_dim,
+                    ff_dim=ff_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.seq_len = seq_len
+
+        def init_weights(module):
+            if isinstance(module, nn.Linear):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                if module.bias is not None:
+                    torch.nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding):
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            elif isinstance(module, nn.LayerNorm):
+                torch.nn.init.zeros_(module.bias)
+                torch.nn.init.ones_(module.weight)
+
+        self.apply(init_weights)
+        for name, param in self.named_parameters():
+            if name.endswith("c_proj.weight"):
+                torch.nn.init.normal_(
+                    param, mean=0.0, std=0.02 / math.sqrt(2 * num_layers)
+                )
+
+
+    
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
