@@ -5,6 +5,9 @@ from typing import Optional
 from torch.nn import functional as F
 from dataclasses import dataclass
 
+"""
+MLP to be used in block
+"""
 class MLP(nn.Module):
     def __init__(self, input_dim: int, ff_dim: int, dropout:int = 0.0):
         super().__init__()
@@ -69,7 +72,27 @@ class PositionalEncoding(torch.nn.Module):
         # import IPython; IPython.embed()
         x = x + self.pe[:, : x.size(1)]
         return x
+    
 
+class Block(nn.Module):
+    def __init__(self, seq_len:int, hidden_dim:int, ff_dim:int, num_heads:int, dropout:float):
+        super().__init__()
+        self.attn = CausalSelfAttention(seq_len=seq_len, hidden_dim=hidden_dim, num_heads=num_heads)
+        self.mlp = MLP(hidden_dim,ff_dim,dropout)
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x:torch.Tensor):
+        attn_out = self.attn(x)
+        x  = x + self.dropout(attn_out)
+        x = self.norm1(x)
+
+        linear_out = self.mlp(x)
+        x = x + self.dropout(linear_out)
+        x = self.norm2(x)
+        return x
+    
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
