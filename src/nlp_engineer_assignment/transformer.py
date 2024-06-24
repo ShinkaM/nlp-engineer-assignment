@@ -4,7 +4,7 @@ import math
 from typing import Optional
 from torch.nn import functional as F
 from dataclasses import dataclass
-
+import numpy as np
 """
 MLP to be used in block
 """
@@ -177,6 +177,24 @@ class Transformer(nn.Module):
         if labels is not None:
             loss = F.cross_entropy(logits.reshape(-1, self.output_vocab_size), labels.flatten())
         return logits, loss
+    
+
+    @torch.no_grad()
+    def generate(self, inp) -> torch.Tensor:
+        if isinstance(inp, (list, np.ndarray)):
+            inp = torch.longTensor(inp)
+        elif not isinstance(inp, torch.Tensor):
+            raise ValueError(
+                "Expected inp to be list, np.array or torch.tensor. Found {typ}".format(
+                    typ=type(inp)
+                )
+            )
+        logits = self(inp.unsqueeze(0)).squeeze()
+        idxs = logits.argmax(-1)
+        return logits, idxs 
+    
+    
+
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
