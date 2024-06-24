@@ -25,25 +25,32 @@ class CausalSelfAttention(nn.Module):
         self.hidden_dim = hidden_dim
         self.seq_len = seq_len
         self.num_heads = num_heads
+        assert hidden_dim % num_heads == 0, "num_heads must be a factor of hidden_dim."
 
-        self.qkv_proj = nn.Linear(hidden_dim, 3 * num_heads * self.qkv_dim, bias=False)
-        self.o_proj = nn.Linear(num_heads * self.qkv_dim, hidden_dim, bias=False)
+        self.qkv_proj = nn.Linear(hidden_dim, 3 * self.qkv_dim, bias=False)
+        self.o_proj = nn.Linear(self.qkv_dim, hidden_dim, bias=False)
         self.temp = 1
-        self.causal_mask = torch.tril(torch.ones(seq_len, seq_len)).view( 1, seq_len, seq_len)
-
+        self.causal_mask = torch.tril(torch.ones(seq_len, seq_len)).view(
+            1, 1, seq_len, seq_len
+        )
 
     def forward(self, x: torch.Tensor):
-        B, S, H = x.shape
-
+        B, S, D = x.shape
         M = self.qkv_proj(x)
-        q,k,v = M.split(self.hidden_dim, dim=2)
-    
-        qk = torch.einsum('bih,bjh->bij', q, k) * (self.temp / math.sqrt(H))
-        qk_masked = qk.masked_fill(self.causal_mask.repeat(B, 1, 1) == 0, float('-inf'))
-        scores = F.softmax(qk_masked, dim=-1)
-        output = torch.einsum('bij,bjh->bih',scores,v)
+        q, k, v = M.split(self.hidden_dim, dim=-1)
+        q = q.view(B, S, self.num_heads, -1)  # (B, S, H D)
+        k = k.view(B, S, self.num_heads, -1)
+        v = v.view(B, S, self.num_heads, -1)
 
+        qk = torch.einsum("bihd,bjhd->bhij", q, k) * (
+            self.temp / math.sqrt(D // self.num_heads)
+        )
+        qk_masked = qk.masked_fill(self.causal_mask[:, :, :S, :S] == 0, float("-inf"))
+        scores = F.softmax(qk_masked, dim=-1)
+        output = torch.einsum("bhij,bjhd->bihd", scores, v)
+        output = output.contiguous().view(B, S, D)
         return output
+    
 
 class PositionalEncoding(torch.nn.Module):
     def __init__(self, hidden_dim:int, seq_len:int):
