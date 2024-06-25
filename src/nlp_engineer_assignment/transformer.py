@@ -40,7 +40,7 @@ class CausalSelfAttention(nn.Module):
         self.temp = 1
         self.causal_mask = torch.tril(torch.ones(seq_len, seq_len)).view(
             1, 1, seq_len, seq_len
-        )
+        )#apply masking so that the model does not see ahead. 
 
     def forward(self, x: torch.Tensor):
         B, S, D = x.shape
@@ -52,16 +52,19 @@ class CausalSelfAttention(nn.Module):
 
         qk = torch.einsum("bihd,bjhd->bhij", q, k) * (
             self.temp / math.sqrt(D // self.num_heads)
-        )
+        )#pultiplication of q times k
         qk_masked = qk.masked_fill(self.causal_mask[:, :, :S, :S] == 0, float("-inf"))
         scores = F.softmax(qk_masked, dim=-1)
-        output = torch.einsum("bhij,bjhd->bihd", scores, v)
+        output = torch.einsum("bhij,bjhd->bihd", scores, v)#multiplication of qk * v
         output = output.contiguous().view(B, S, D)
         return output
     
+"""
+seq_leb, embedding_dim
 
+"""
 class PositionalEncoding(torch.nn.Module):
-    def __init__(self, hidden_dim:int, seq_len:int):
+    def __init__(self, seq_len:int, hidden_dim:int):
         super().__init__()
         pe = torch.zeros(seq_len, hidden_dim)
         position = torch.arange(0, seq_len, dtype=torch.float).unsqueeze(1)
@@ -83,7 +86,13 @@ class Block(nn.Module):
     def __init__(self, seq_len:int, hidden_dim:int, ff_dim:int, num_heads:int, dropout:float):
         super().__init__()
         self.attn = CausalSelfAttention(seq_len=seq_len, hidden_dim=hidden_dim, num_heads=num_heads)
-        self.mlp = MLP(hidden_dim,ff_dim,dropout)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_dim, ff_dim),
+            nn.Dropout(dropout),
+            nn.GELU(),
+            nn.Linear(ff_dim, hidden_dim),
+        )
         self.norm1 = nn.LayerNorm(hidden_dim)
         self.norm2 = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
@@ -124,7 +133,7 @@ class Transformer(nn.Module):
             output_vocab_size=output_vocab_size,
         )
         self.token_embed = nn.Embedding(vocab_size, embed_dim)
-        self.position_embed = nn.Embedding(seq_len, embed_dim)
+        self.position_embed = PositionalEncoding(seq_len, embed_dim)
 
         self.decode_to_vocab = nn.Linear(embed_dim, output_vocab_size)
         self.dropout = nn.Dropout(p=dropout)
@@ -195,9 +204,9 @@ class Transformer(nn.Module):
 
     def forward(self, idx:torch.Tensor):
         B,S = idx.shape
-        position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
+        # position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
         token_embed = self.token_embed(idx)
-
+        position_embed = self.position_embed(token_embed)
         embed = self.dropout(token_embed + position_embed)
 
         for block in self.layers:
@@ -250,66 +259,71 @@ class Transformer(nn.Module):
 
 
 def train_classifier(
-        vocabs,
-        train_inputs,
-        batch_size: int = 10, 
-        num_workers: int = 1,
-        n_epochs: int = 10,
-        device: str = "cpu",
-        eval_every_n_epochs: int = 1
+    vocabs,
+    train_inputs,
+    batch_size: int = 10,
+    num_workers: int = 1,
+    n_epochs: int = 10,
+    device: str = "cpu",
+    eval_every_n_epochs: int = 1,
 ):
-    output_vocab_size = 3 #0, 1, or 2
+    output_vocab_size = 3  # 0, 1, or 2
+
+    # @TODO: Analysis on the minimum number of layers we need "in theory"
+    # to modl the "counting" function. From RASP: ICML 2021.
     model = Transformer(
         ff_dim=64,
-        num_layers= 5,
-        num_heads=4, 
+        num_layers=5,
+        num_heads=4,
         embed_dim=512,
         vocab_size=len(vocabs),
         output_vocab_size=output_vocab_size,
-        dropout=0.01
+        dropout=0.01,
     )
-    optimizer = model.configure_optimizers(lr = 3e-4, weight_decay = 0.02)
+    optimizer = model.configure_optimizers(lr=3e-4, weight_decay=0.02)
+    # Reduce LR 0.1x after every epoch.
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1)
+
 
     train_dataset = CharTokenizedDataset(sentences=train_inputs, vocab=vocabs)
     train_loader = train_dataset.get_dataloader(
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_memory=num_workers > 0,
+        pin_memory=(num_workers > 0),
     )
-    
+
     for epoch in range(n_epochs):
         model.train()
-        batch_iter = tqdm(train_loader, desc = f"Epoch {epoch}, Loss: NaN")
+        batch_iter = tqdm(train_loader, desc=f"Epoch {epoch}, Loss: NaN")
         for i, batch in enumerate(batch_iter):
             idxs, counts = batch
             idxs = idxs.to(device)
             counts = counts.to(device)
-            _, loss = model.step(idx = idxs, labels=counts)
+            logits, loss = model.step(idx=idxs, labels=counts)
             model.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             batch_iter.set_description(
                 "Epoch {epoch}, Loss: {loss:.4f}".format(
-                epoch=epoch,
-                loss=loss.item(),
+                    epoch=epoch,
+                    loss=loss.item(),
                 )
             )
-            scheduler.step()
+        scheduler.step()
 
-            if epoch % eval_every_n_epochs == 0:
-                model.eval()
-                sample_sentence = train_inputs[0]
-                sample_input, sample_count = train_dataset[0]
-                pred_logits, generated_count = model.generate(sample_input)
-                for i, c in enumerate(sample_sentence):
-                    print(
-                        "{i:>2}, {c}, {count:>3}, {pred_count:>3}".format(
-                            i=i, c=c, count=sample_count[i], pred_count=generated_count[i]
-                        )
+        if epoch % eval_every_n_epochs == 0:
+            model.eval()
+            sample_sentence = train_inputs[0]
+            sample_input, sample_count = train_dataset[0]
+            pred_logits, generated_count = model.generate(sample_input)
+            for i, c in enumerate(sample_sentence):
+                print(
+                    "{i:>2}, {c}, {count:>3}, {pred_count:>3}".format(
+                        i=i, c=c, count=sample_count[i], pred_count=generated_count[i]
                     )
-        return model
-    
+                )
+    return model
+
 
 if __name__ == "__main__":
     # Simple tests.
