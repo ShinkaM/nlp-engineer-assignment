@@ -8,7 +8,8 @@ import numpy as np
 from .dataset import CharTokenizedDataset
 from .utils import count_letters, read_inputs, score
 from tqdm import tqdm
-
+import os
+import pickle
 """
 MLP to be used in block
 """
@@ -123,7 +124,7 @@ class Transformer(nn.Module):
             output_vocab_size=output_vocab_size,
         )
         self.token_embed = nn.Embedding(vocab_size, embed_dim)
-        self.position_embed = PositionalEncoding(embed_dim, seq_len)
+        self.position_embed = nn.Embedding(seq_len, embed_dim)
 
         self.decode_to_vocab = nn.Linear(embed_dim, output_vocab_size)
         self.dropout = nn.Dropout(p=dropout)
@@ -161,10 +162,40 @@ class Transformer(nn.Module):
                 torch.nn.init.normal_(
                     param, mean=0.0, std=0.02 / math.sqrt(2 * num_layers)
                 )
+    def configure_optimizers(self, lr, weight_decay):
+        decay = set()
+        no_decay = set()
+        w_modules = (torch.nn.Linear,)
+        b_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+        for mod_name, m in self.named_modules():
+            for param_name, p in m.named_parameters():
+                fpn = "%s.%s" % (mod_name, param_name) if mod_name else param_name
+                if param_name.endswith("bias"):
+                    no_decay.add(fpn)
+                elif param_name.endswith("weight") and isinstance(m, w_modules):
+                    decay.add(fpn)
+                elif param_name.endswith("weight") and isinstance(m, b_modules):
+                    no_decay.add(fpn)
+
+        param_dict = dict(self.named_parameters())
+        optim_groups = [
+            {
+                "params": [param_dict[pn] for pn in sorted(list(decay))],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [param_dict[pn] for pn in sorted(list(no_decay))],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer = torch.optim.AdamW(optim_groups, lr=lr, weight_decay=weight_decay)
+        return optimizer
+
 
     def forward(self, idx:torch.Tensor):
         B,S = idx.shape
-        position_embed = self.position_embed(torch.arrange(S, device = idx.device).unsqueeze(0))
+        position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
         token_embed = self.token_embed(idx)
 
         embed = self.dropout(token_embed + position_embed)
@@ -197,66 +228,89 @@ class Transformer(nn.Module):
         idxs = logits.argmax(-1)
         return logits, idxs 
     
-    def train_classifier(
-            vocabs,
-            train_inputs,
-            batch_size: int = 10, 
-            num_workers: int = 1,
-            n_epochs: int = 10,
-            device: str = "cpu",
-            eval_every_n_epochs: int = 1
-    ):
-        output_size = 3 #0, 1, or 2
-        model = Transformer(
-            ff_dim=64,
-            num_layers= = 5,
-            num_heads=4, 
-            embed_dim=512,
-            vocab_size=len(vocabs),
-            output_vocab_size=output_vocab_size,
-            dropout=0.01
+    def save_checkpoint(self, path):
+        assert os.path.exists(
+            os.path.dirname(path)
+        ), f"Path {os.path.dirname(path)} not found."
+        artifact = dict(
+            state_dict=self.state_dict(), hyperparameters=self.hyperparameters
         )
-        optimizer = model.configure_optimizers(lr = 3e-4, weight_decay = 0.02)
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1)
+        with open(path, "wb") as fp:
+            pickle.dump(artifact, fp)
 
-        train_dataset = CharTokenizedDataset(sentences=train_inputs, vocab=vocabs)
-        train_loader = train_dataset.get_dataloader(
-            batch_size=batch_size,
-            num_workers=num_workers,
-            pin_memory=num_workers > 0,
-        )
-        
-        for epoch in range(n_epochs):
-            model.train()
-            batch_iter = tqdm(train_loader, desc = f"Epoch {epoch}, Loss: NaN")
-            for i, batch in enumerate(batch_iter):
-                idxs, counts = batch
-                idxs = idxs.to(device)
-                counts = counts.to(device)
-                _, loss = model.step(idx = idxs, labels=counts)
-                model.zero_grad(set_to_none=True)
-                loss.backward()
-                optimizer.step()
-                batch_iter.set_description(
-                    "Epoch {epoch}, Loss: {loss:.4f}".format(
-                    epoch=epoch,
-                    loss=loss.item(),
-                    )
+    @classmethod
+    def from_pretrained(cls, model_path):
+        assert os.path.exists(model_path), f"Model not found at {model_path}"
+        with open(model_path, "rb") as fp:
+            artifact = pickle.load(fp)
+
+        model = cls(**artifact["hyperparameters"])
+        model.load_state_dict(artifact["state_dict"], strict=True)
+        return model
+
+
+def train_classifier(
+        vocabs,
+        train_inputs,
+        batch_size: int = 10, 
+        num_workers: int = 1,
+        n_epochs: int = 10,
+        device: str = "cpu",
+        eval_every_n_epochs: int = 1
+):
+    output_vocab_size = 3 #0, 1, or 2
+    model = Transformer(
+        ff_dim=64,
+        num_layers= 5,
+        num_heads=4, 
+        embed_dim=512,
+        vocab_size=len(vocabs),
+        output_vocab_size=output_vocab_size,
+        dropout=0.01
+    )
+    optimizer = model.configure_optimizers(lr = 3e-4, weight_decay = 0.02)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.1)
+
+    train_dataset = CharTokenizedDataset(sentences=train_inputs, vocab=vocabs)
+    train_loader = train_dataset.get_dataloader(
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=num_workers > 0,
+    )
+    
+    for epoch in range(n_epochs):
+        model.train()
+        batch_iter = tqdm(train_loader, desc = f"Epoch {epoch}, Loss: NaN")
+        for i, batch in enumerate(batch_iter):
+            idxs, counts = batch
+            idxs = idxs.to(device)
+            counts = counts.to(device)
+            _, loss = model.step(idx = idxs, labels=counts)
+            model.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            batch_iter.set_description(
+                "Epoch {epoch}, Loss: {loss:.4f}".format(
+                epoch=epoch,
+                loss=loss.item(),
                 )
-                scheduler.step()
+            )
+            scheduler.step()
 
-                if epoch % eval_every_n_epochs == 0:
-                    model.eval()
-                    sample_sentence = train_inputs[0]
-                    sample_input, sample_count = train_dataset[0]
-                    pred_logits, generated_count = model.generate(sample_input)
-                    for i, c in enumerate(sample_sentence):
-                        print(
-                            "{i:>2}, {c}, {count:>3}, {pred_count:>3}".format(
-                                i=i, c=c, count=sample_count[i], pred_count=generated_count[i]
-                            )
+            if epoch % eval_every_n_epochs == 0:
+                model.eval()
+                sample_sentence = train_inputs[0]
+                sample_input, sample_count = train_dataset[0]
+                pred_logits, generated_count = model.generate(sample_input)
+                for i, c in enumerate(sample_sentence):
+                    print(
+                        "{i:>2}, {c}, {count:>3}, {pred_count:>3}".format(
+                            i=i, c=c, count=sample_count[i], pred_count=generated_count[i]
                         )
-            return model
+                    )
+        return model
+    
+
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
