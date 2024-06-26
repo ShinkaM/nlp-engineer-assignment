@@ -244,6 +244,7 @@ class Transformer(nn.Module):
         position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
         token_embed = self.token_embed(idx)
         # position_embed = self.position_embed(token_embed)
+        # import IPython; IPython.embed()
         embed = self.dropout(token_embed + position_embed)
 
         for block in self.layers:
@@ -261,12 +262,9 @@ class Transformer(nn.Module):
     
 
     @torch.no_grad()
-    """
-    Used to verify outputs manually
-    """
     def generate(self, inp) -> torch.Tensor:
         if isinstance(inp, (list, np.ndarray)):
-            inp = torch.longTensor(inp)
+            inp = torch.LongTensor(inp)
         elif not isinstance(inp, torch.Tensor):
             raise ValueError(
                 "Expected inp to be list, np.array or torch.tensor. Found {typ}".format(
