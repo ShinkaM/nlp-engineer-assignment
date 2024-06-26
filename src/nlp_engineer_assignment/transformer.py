@@ -67,8 +67,7 @@ class CausalSelfAttention(nn.Module):
         return output
     
 """
-seq_leb, embedding_dim
-
+Positional Enciding using sine/cosine; not used in implementation
 """
 class PositionalEncoding(torch.nn.Module):
     def __init__(self, seq_len:int, hidden_dim:int):
@@ -307,8 +306,7 @@ def train_classifier(
 ):
     output_vocab_size = 3  # 0, 1, or 2
 
-    # @TODO: Analysis on the minimum number of layers we need "in theory"
-    # to modl the "counting" function. From RASP: ICML 2021.
+  
     model = Transformer(
         ff_dim=64,
         num_layers=5,
@@ -366,19 +364,20 @@ def train_classifier(
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
-    # mlp = MLP(input_dim = 1, ff_dim = 3, dropout= 0.0)
-    # out = mlp(torch.zeros(10, 1))
-    # assert out.shape == (10, 1), f"Failed!{out.shape}"
+    mlp = MLP(input_dim = 1, ff_dim = 3, dropout= 0.0)
+    out = mlp(torch.zeros(10, 1))
+    assert out.shape == (10, 1), f"Failed!{out.shape}"
 
-    # # Unit test for Self Attention
-    # s = CausalSelfAttention(seq_len = 32, hidden_dim = 16, num_heads = 1)
-    # inp = torch.zeros(10, 32, 16)
-    # out = s(inp)
-    # assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
-    # pe = PositionalEncoding(hidden_dim=16, seq_len = 32)
-    # inp = torch.zeros(10, 32, 16)
-    # out = pe(inp)
-    # assert out.shape == inp.shape, f"Failed!{out.shape, inp.shape}"
+    # Unit test for Self Attention
+    s = CausalSelfAttention(seq_len = 32, hidden_dim = 16, num_heads = 1)
+    inp = torch.zeros(10, 32, 16)
+    out = s(inp)
+    assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
+    pe = PositionalEncoding(hidden_dim=16, seq_len = 32)
+    inp = torch.zeros(10, 32, 16)
+    out = pe(inp)
+    assert out.shape == inp.shape, f"Failed!{out.shape, inp.shape}"
+    #Test for CustomLayerNorm
     input_tensor = torch.randn(20, 5, 10, 10)  # Example input tensor
     layer_norm = CustomLayerNorm(10)  # Normalize over the last dimension
     output_tensor = layer_norm(input_tensor)
