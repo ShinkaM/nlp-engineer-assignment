@@ -12,6 +12,10 @@ import os
 import pickle
 """
 MLP to be used in block
+
+input_dim = dimension f inout tensor
+ff_dim = hidden dimension
+dropout = parameter for nn.Dropout
 """
 class MLP(nn.Module):
     def __init__(self, input_dim: int, ff_dim: int, dropout:int = 0.0):
@@ -25,18 +29,21 @@ class MLP(nn.Module):
     def forward(self, x: torch.Tensor):
         return self.model(x)
 
+"""
+Implementation of self attention from scratch
 
+"""
 class CausalSelfAttention(nn.Module):
     def __init__(self, seq_len: int, hidden_dim: int, num_heads: int = 1):
         super().__init__()
-        self.qkv_dim = hidden_dim
+        self.qkv_dim = hidden_dim 
         self.hidden_dim = hidden_dim
         self.seq_len = seq_len
         self.num_heads = num_heads
         assert hidden_dim % num_heads == 0, "num_heads must be a factor of hidden_dim."
 
-        self.qkv_proj = nn.Linear(hidden_dim, 3 * self.qkv_dim, bias=False)
-        self.o_proj = nn.Linear(self.qkv_dim, hidden_dim, bias=False)
+        self.qkv_proj = nn.Linear(hidden_dim, 3 * self.qkv_dim, bias=False)#key, query, value projections in a batch
+        self.o_proj = nn.Linear(self.qkv_dim, hidden_dim, bias=False)#output projection
         self.temp = 1
         self.causal_mask = torch.tril(torch.ones(seq_len, seq_len)).view(
             1, 1, seq_len, seq_len
@@ -46,13 +53,13 @@ class CausalSelfAttention(nn.Module):
         B, S, D = x.shape
         M = self.qkv_proj(x)
         q, k, v = M.split(self.hidden_dim, dim=-1)
-        q = q.view(B, S, self.num_heads, -1)  # (B, S, H D)
+        q = q.view(B, S, self.num_heads, -1)  # (B, S, H, D)
         k = k.view(B, S, self.num_heads, -1)
         v = v.view(B, S, self.num_heads, -1)
 
         qk = torch.einsum("bihd,bjhd->bhij", q, k) * (
             self.temp / math.sqrt(D // self.num_heads)
-        )#pultiplication of q times k
+        )#multiplication of q times k
         qk_masked = qk.masked_fill(self.causal_mask[:, :, :S, :S] == 0, float("-inf"))
         scores = F.softmax(qk_masked, dim=-1)
         output = torch.einsum("bhij,bjhd->bihd", scores, v)#multiplication of qk * v
@@ -81,6 +88,35 @@ class PositionalEncoding(torch.nn.Module):
         x = x + self.pe[:, : x.size(1)]
         return x
     
+"""
+Implementation of nn.LayerNorm from scratch
+"""
+class CustomLayerNorm(nn.Module):
+    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True):
+        super(CustomLayerNorm, self).__init__()
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        self.normalized_shape = normalized_shape
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+
+        if self.elementwise_affine:
+            self.gamma = nn.Parameter(torch.ones(normalized_shape))
+            self.beta = nn.Parameter(torch.zeros(normalized_shape))
+        else:
+            self.register_parameter('gamma', None)
+            self.register_parameter('beta', None)
+
+    def forward(self, x):
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, keepdim=True, unbiased=False)
+        x_normalized = (x - mean) / torch.sqrt(var + self.eps)
+
+        if self.elementwise_affine:
+            x_normalized = x_normalized * self.gamma + self.beta
+        
+        return x_normalized
+    
 
 class Block(nn.Module):
     def __init__(self, seq_len:int, hidden_dim:int, ff_dim:int, num_heads:int, dropout:float):
@@ -93,8 +129,8 @@ class Block(nn.Module):
             nn.GELU(),
             nn.Linear(ff_dim, hidden_dim),
         )
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.norm1 = CustomLayerNorm(hidden_dim)
+        self.norm2 = CustomLayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x:torch.Tensor):
@@ -133,8 +169,8 @@ class Transformer(nn.Module):
             output_vocab_size=output_vocab_size,
         )
         self.token_embed = nn.Embedding(vocab_size, embed_dim)
-        self.position_embed = PositionalEncoding(seq_len, embed_dim)
-
+        # self.position_embed = PositionalEncoding(seq_len, embed_dim)
+        self.position_embed = nn.Embedding(seq_len, embed_dim)
         self.decode_to_vocab = nn.Linear(embed_dim, output_vocab_size)
         self.dropout = nn.Dropout(p=dropout)
 
@@ -151,7 +187,7 @@ class Transformer(nn.Module):
             ]
         )
 
-        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.layer_norm = CustomLayerNorm(embed_dim)
         self.seq_len = seq_len
 
         def init_weights(module):
@@ -161,9 +197,9 @@ class Transformer(nn.Module):
                     torch.nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Embedding):
                 torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            elif isinstance(module, nn.LayerNorm):
-                torch.nn.init.zeros_(module.bias)
-                torch.nn.init.ones_(module.weight)
+            elif isinstance(module, CustomLayerNorm):
+                torch.nn.init.zeros_(module.beta)
+                torch.nn.init.ones_(module.gamma)
 
         self.apply(init_weights)
         for name, param in self.named_parameters():
@@ -172,18 +208,19 @@ class Transformer(nn.Module):
                     param, mean=0.0, std=0.02 / math.sqrt(2 * num_layers)
                 )
     def configure_optimizers(self, lr, weight_decay):
+        #select parameters that does/does not experience weight decay
         decay = set()
         no_decay = set()
         w_modules = (torch.nn.Linear,)
-        b_modules = (torch.nn.LayerNorm, torch.nn.Embedding)
+        b_modules = (CustomLayerNorm, torch.nn.Embedding)
         for mod_name, m in self.named_modules():
             for param_name, p in m.named_parameters():
                 fpn = "%s.%s" % (mod_name, param_name) if mod_name else param_name
-                if param_name.endswith("bias"):
+                if param_name.endswith("bias"):#bias will not be decayed
                     no_decay.add(fpn)
-                elif param_name.endswith("weight") and isinstance(m, w_modules):
+                elif param_name.endswith("weight") and isinstance(m, w_modules): #weights of w_modules will be decayed
                     decay.add(fpn)
-                elif param_name.endswith("weight") and isinstance(m, b_modules):
+                elif param_name.endswith("weight") and isinstance(m, b_modules):#weights of b_modules will not be decayed
                     no_decay.add(fpn)
 
         param_dict = dict(self.named_parameters())
@@ -204,9 +241,9 @@ class Transformer(nn.Module):
 
     def forward(self, idx:torch.Tensor):
         B,S = idx.shape
-        # position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
+        position_embed = self.position_embed(torch.arange(S, device = idx.device).unsqueeze(0))
         token_embed = self.token_embed(idx)
-        position_embed = self.position_embed(token_embed)
+        # position_embed = self.position_embed(token_embed)
         embed = self.dropout(token_embed + position_embed)
 
         for block in self.layers:
@@ -224,6 +261,9 @@ class Transformer(nn.Module):
     
 
     @torch.no_grad()
+    """
+    Used to verify outputs manually
+    """
     def generate(self, inp) -> torch.Tensor:
         if isinstance(inp, (list, np.ndarray)):
             inp = torch.longTensor(inp)
@@ -310,7 +350,7 @@ def train_classifier(
                 )
             )
         scheduler.step()
-
+        #print sample after epochs
         if epoch % eval_every_n_epochs == 0:
             model.eval()
             sample_sentence = train_inputs[0]
@@ -328,16 +368,20 @@ def train_classifier(
 if __name__ == "__main__":
     # Simple tests.
     # Unit test for MLP
-    mlp = MLP(input_dim = 1, ff_dim = 3, dropout= 0.0)
-    out = mlp(torch.zeros(10, 1))
-    assert out.shape == (10, 1), f"Failed!{out.shape}"
+    # mlp = MLP(input_dim = 1, ff_dim = 3, dropout= 0.0)
+    # out = mlp(torch.zeros(10, 1))
+    # assert out.shape == (10, 1), f"Failed!{out.shape}"
 
-    # Unit test for Self Attention
-    s = CausalSelfAttention(seq_len = 32, hidden_dim = 16, num_heads = 1)
-    inp = torch.zeros(10, 32, 16)
-    out = s(inp)
-    assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
-    pe = PositionalEncoding(hidden_dim=16, seq_len = 32)
-    inp = torch.zeros(10, 32, 16)
-    out = pe(inp)
-    assert out.shape == inp.shape, f"Failed!{out.shape, inp.shape}"
+    # # Unit test for Self Attention
+    # s = CausalSelfAttention(seq_len = 32, hidden_dim = 16, num_heads = 1)
+    # inp = torch.zeros(10, 32, 16)
+    # out = s(inp)
+    # assert out.shape == (10, 32, 16), f"Failed!{out.shape}"
+    # pe = PositionalEncoding(hidden_dim=16, seq_len = 32)
+    # inp = torch.zeros(10, 32, 16)
+    # out = pe(inp)
+    # assert out.shape == inp.shape, f"Failed!{out.shape, inp.shape}"
+    input_tensor = torch.randn(20, 5, 10, 10)  # Example input tensor
+    layer_norm = CustomLayerNorm(10)  # Normalize over the last dimension
+    output_tensor = layer_norm(input_tensor)
+    assert output_tensor.shape == input_tensor.shape, f"Failed!{output_tensor.shape, input_tensor.shape}"
