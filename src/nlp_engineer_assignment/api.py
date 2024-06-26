@@ -15,7 +15,7 @@ model = None
 vocabs = [chr(ord("a") + i) for i in range(0, 26)] + [" "]
 
 """
-load model from pretrained
+load model from trained_model.ckpt
 """
 async def load_model(device):
     global model

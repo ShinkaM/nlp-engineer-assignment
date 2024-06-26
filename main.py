@@ -70,7 +70,7 @@ def train_model():
 
 
 if __name__ == "__main__":
-    # train_model()
+    train_model()
     uvicorn.run(
         "nlp_engineer_assignment.api:app",
         host="0.0.0.0",
